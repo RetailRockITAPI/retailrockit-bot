@@ -10,12 +10,10 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// In-memory storage for user state (Who is talking to us?)
-// format: { "phone_number": { step: 1, answers: [] } }
 const userState = {};
 
 // ==========================================
-// 1. THE CALCULATOR LOGIC (Internal)
+// 1. ROBUST CALCULATOR (Manual URL + Logging)
 // ==========================================
 async function calculateQuote(apiKey) {
     try {
@@ -24,63 +22,62 @@ async function calculateQuote(apiKey) {
         let keepFetching = true;
         let pageNumber = 1;
 
-        // We will look back approx 360 days (matching your Python logic)
-        // Simplified: Just fetch all sales in the date range
+        // TEST MODE: Look back only 30 days first (Speed Test)
+        // If this works, the connection is good.
         const today = new Date();
-        const oneYearAgo = new Date();
-        oneYearAgo.setDate(today.getDate() - 360);
+        const pastDate = new Date();
+        pastDate.setDate(today.getDate() - 30); 
 
-        const startDate = oneYearAgo.toISOString().split('T')[0];
+        const startDate = pastDate.toISOString().split('T')[0];
         const endDate = today.toISOString().split('T')[0];
         
-        console.log(`Fetching sales from ${startDate} to ${endDate}...`);
+        console.log(`[Calc] Starting fetch: ${startDate} to ${endDate}`);
 
         while (keepFetching) {
-            const response = await axios.get(baseUrl, {
+            // Manual URL construction to match Python exactly and avoid Axios encoding issues
+            const finalUrl = `${baseUrl}?filters=start_date:${startDate},end_date:${endDate}&page_number=${pageNumber}&page_size=100`;
+
+            console.log(`[Calc] Requesting Page ${pageNumber}...`);
+
+            const response = await axios.get(finalUrl, {
                 headers: {
                     'Authorization': `Key ${apiKey}`,
                     'Content-Type': 'application/json'
-                },
-                params: {
-                    filters: `start_date:${startDate},end_date:${endDate}`,
-                    page_number: pageNumber,
-                    page_size: 100 
                 }
             });
 
             if (response.status === 200 && response.data.sales && response.data.sales.length > 0) {
                 const sales = response.data.sales;
-                
                 sales.forEach(sale => {
-                    // Sum up the selling_price (Gross Sales)
                     if (sale.selling_price) {
                         totalSales += parseFloat(sale.selling_price);
                     }
                 });
-
-                console.log(`Page ${pageNumber}: Found ${sales.length} sales. Running Total: ${totalSales}`);
+                console.log(`[Calc] Page ${pageNumber} Success. Rows: ${sales.length}`);
                 pageNumber++;
-                
-                // Safety break to prevent infinite loops if API is weird
-                if (pageNumber > 50) keepFetching = false; 
-
+                if (pageNumber > 20) keepFetching = false; // Safety limit
             } else {
-                keepFetching = false; // No more sales or empty page
+                keepFetching = false;
             }
         }
 
-        // Calculate the Offer (80% of Gross Sales)
-        const offerAmount = totalSales * 0.80;
-        return Math.floor(offerAmount); // Return rounded number
+        console.log(`[Calc] Finished. Total Sales: ${totalSales}`);
+        // Quote is 80% of sales
+        return Math.floor(totalSales * 0.80);
 
     } catch (error) {
-        console.error("Calculator Error:", error.message);
-        return null; // Signal that it failed
+        // DETAILED ERROR LOGGING
+        if (error.response) {
+            console.error("[Calc Error] API Rejected Request:", error.response.status, error.response.data);
+        } else {
+            console.error("[Calc Error] Network/Code Issue:", error.message);
+        }
+        return null; 
     }
 }
 
 // ==========================================
-// 2. WHATSAPP CONNECTION
+// 2. WHATSAPP HANDLER
 // ==========================================
 app.get("/webhook", (req, res) => {
     if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === VERIFY_TOKEN) {
@@ -91,105 +88,82 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
+    // 1. Respond to Facebook IMMEDIATELY to prevent timeout
+    res.sendStatus(200);
+
     const body = req.body;
+    if (body.object && body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
+        const messageData = body.entry[0].changes[0].value.messages[0];
+        const from = messageData.from;
+        const text = messageData.text ? messageData.text.body : "";
 
-    if (body.object) {
-        if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
-            const messageData = body.entry[0].changes[0].value.messages[0];
-            const from = messageData.from;
-            const text = messageData.text ? messageData.text.body : "";
+        if (!userState[from]) userState[from] = { step: 0 };
+        const step = userState[from].step;
 
-            // Initialize user state if new
-            if (!userState[from]) {
-                userState[from] = { step: 0 };
-            }
+        // RESET
+        if (text.toLowerCase() === "reset") {
+            userState[from].step = 0;
+            await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
+            return;
+        }
 
-            const step = userState[from].step;
-
-            // --- CONVERSATION FLOW ---
-            
-            // RESET command
-            if (text.toLowerCase() === "reset") {
+        // STEP 0 -> 1
+        if (step === 0) {
+            await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want to see how much funding you qualify for? (Yes/No)");
+            userState[from].step = 1;
+        } 
+        
+        // STEP 1 -> 2
+        else if (step === 1) {
+            if (text.toLowerCase().includes("yes")) {
+                await sendWhatsAppMessage(from, "Great! Please paste your **Takealot Seller API Key** below.");
+                userState[from].step = 2;
+            } else {
+                await sendWhatsAppMessage(from, "No problem! Type 'Hi' anytime.");
                 userState[from].step = 0;
-                await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
-                res.sendStatus(200);
-                return;
-            }
-
-            // STEP 0: Welcome
-            if (step === 0) {
-                await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nWe help Takealot sellers calculate their funding potential.\n\nDo you want to see how much funding you qualify for? (Yes/No)");
-                userState[from].step = 1;
-            } 
-            
-            // STEP 1: Confirm Interest
-            else if (step === 1) {
-                if (text.toLowerCase().includes("yes")) {
-                    await sendWhatsAppMessage(from, "Great! To give you an accurate quote, we need to analyze your sales history.\n\nPlease paste your **Takealot Seller API Key** below.\n\n_(Don't worry, we only use this once to calculate the number!)_");
-                    userState[from].step = 2;
-                } else {
-                    await sendWhatsAppMessage(from, "No problem! Type 'Hi' anytime you are ready to grow.");
-                    userState[from].step = 0;
-                }
-            }
-
-            // STEP 2: Handle API Key & Calculate
-            else if (step === 2) {
-                const apiKey = text.trim(); // The user's input is the key
-
-                // Validate Key length (Basic check)
-                if (apiKey.length < 10) {
-                    await sendWhatsAppMessage(from, "That API key looks a bit short. Please check it and paste it again.");
-                    return; 
-                }
-
-                await sendWhatsAppMessage(from, "🔍 Crunching the numbers... This takes about 10 seconds.");
-
-                // CALL THE INTERNAL CALCULATOR
-                const quote = await calculateQuote(apiKey);
-
-                if (quote !== null) {
-                    // Format as Currency (ZAR)
-                    const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
-                    
-                    await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for up to:\n\n💰 **${formattedQuote}**\n\nWould you like to speak to an agent to secure this funding? (Yes/No)`);
-                    userState[from].step = 3;
-                } else {
-                    await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data. Please make sure the API Key is correct and try again.\n\n(Type 'reset' to start over)");
-                }
-            }
-
-            // STEP 3: Closing
-            else if (step === 3) {
-                 await sendWhatsAppMessage(from, "Perfect. An agent will contact you shortly on this number. 🚀\n\nHave a great day!");
-                 userState[from].step = 0; // Reset
             }
         }
-        res.sendStatus(200);
-    } else {
-        res.sendStatus(404);
+
+        // STEP 2 -> CALC
+        else if (step === 2) {
+            const apiKey = text.trim();
+
+            if (apiKey.length < 10) {
+                await sendWhatsAppMessage(from, "That key looks too short. Please try again.");
+                return; 
+            }
+
+            await sendWhatsAppMessage(from, "🔍 Crunching the numbers... (Checking last 30 days)");
+
+            // Run calculation
+            const quote = await calculateQuote(apiKey);
+
+            if (quote !== null) {
+                const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
+                await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your recent sales, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you? (Yes/No)`);
+                userState[from].step = 3;
+            } else {
+                await sendWhatsAppMessage(from, "⚠️ Access Denied.\n\nTakealot rejected the key. Please check:\n1. Is the key copied correctly?\n2. Is the key still active?");
+            }
+        }
+
+        // STEP 3 -> END
+        else if (step === 3) {
+             await sendWhatsAppMessage(from, "Perfect. An agent will contact you shortly! 🚀");
+             userState[from].step = 0;
+        }
     }
 });
 
-// Helper function to send messages
 async function sendWhatsAppMessage(to, bodyText) {
     try {
         await axios.post(
             `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to: to,
-                text: { body: bodyText }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "application/json"
-                }
-            }
+            { messaging_product: "whatsapp", to: to, text: { body: bodyText } },
+            { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
         );
     } catch (error) {
-        console.error("Error sending message:", error.response ? error.response.data : error.message);
+        console.error("Msg Error:", error.response ? error.response.data : error.message);
     }
 }
 
