@@ -5,141 +5,194 @@ const axios = require("axios");
 const app = express();
 app.use(bodyParser.json());
 
-// --- SETTINGS (These come from your Render Environment) ---
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN; 
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN; 
-const CALCULATOR_URL = process.env.CALCULATOR_URL; // URL of your existing Quote App
+const PORT = process.env.PORT || 3000;
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// --- YOUR AGENTS ---
-// Add or remove agents here. The bot will pick one at random.
-const AGENTS = [
-  { name: "Consultant Sarah", link: "https://wa.me/27821234567" },
-  { name: "Consultant Mike",  link: "https://wa.me/27829876543" },
-  { name: "Consultant Thabo", link: "https://wa.me/27825555555" }
-];
-
-// Memory to track where the user is in the conversation
+// In-memory storage for user state (Who is talking to us?)
+// format: { "phone_number": { step: 1, answers: [] } }
 const userState = {};
 
-// --- HELPER: Send WhatsApp Message ---
-async function sendMessage(to, text) {
-  try {
-    await axios({
-      method: "POST",
-      url: `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-      headers: {
-        "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      data: {
-        messaging_product: "whatsapp",
-        to: to,
-        text: { body: text },
-      },
-    });
-  } catch (error) {
-    console.error("Error sending message:", error.response ? error.response.data : error.message);
-  }
-}
+// ==========================================
+// 1. THE CALCULATOR LOGIC (Internal)
+// ==========================================
+async function calculateQuote(apiKey) {
+    try {
+        const baseUrl = 'https://seller-api.takealot.com/v2/sales';
+        let totalSales = 0;
+        let keepFetching = true;
+        let pageNumber = 1;
 
-// --- MAIN SERVER ---
+        // We will look back approx 360 days (matching your Python logic)
+        // Simplified: Just fetch all sales in the date range
+        const today = new Date();
+        const oneYearAgo = new Date();
+        oneYearAgo.setDate(today.getDate() - 360);
 
-// 1. Facebook Verify (Required to turn the bot on)
-app.get("/webhook", (req, res) => {
-  if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === VERIFY_TOKEN) {
-    res.send(req.query["hub.challenge"]);
-  } else {
-    res.sendStatus(400);
-  }
-});
+        const startDate = oneYearAgo.toISOString().split('T')[0];
+        const endDate = today.toISOString().split('T')[0];
+        
+        console.log(`Fetching sales from ${startDate} to ${endDate}...`);
 
-// 2. Incoming Messages
-app.post("/webhook", async (req, res) => {
-  const body = req.body;
-
-  if (body.object) {
-    if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
-      const message = body.entry[0].changes[0].value.messages[0];
-      const from = message.from; 
-      const msgText = message.text ? message.text.body : "";
-
-      // Start or retrieve user session
-      if (!userState[from]) userState[from] = { step: 0 };
-      const step = userState[from].step;
-
-      // --- THE CONVERSATION FLOW ---
-
-      // Step 0: User says anything -> Bot asks Hook 1
-      if (step === 0) {
-        await sendMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want your business to make more money? (Yes/No)");
-        userState[from].step = 1;
-      } 
-      
-      // Step 1: Hook 2
-      else if (step === 1) {
-        await sendMessage(from, "Great. Do you want to grow your business aggressively? (Yes/No)");
-        userState[from].step = 2;
-      }
-
-      // Step 2: Hook 3
-      else if (step === 2) {
-        await sendMessage(from, "Do you want to Fuel Your FREEDOM? (Yes/No)");
-        userState[from].step = 3;
-      }
-
-      // Step 3: Ask for Takealot API Key
-      else if (step === 3) {
-        await sendMessage(from, "Let's see what we can do for you.\n\nPlease paste your Takealot Seller API Key below so we can generate your quote:");
-        userState[from].step = 4;
-      }
-
-      // Step 4: Process API Key & Call Your Calculator App
-      else if (step === 4) {
-        await sendMessage(from, "Crunching the numbers... this might take a few seconds.");
-
-        try {
-            // WE SEND THE KEY TO YOUR OTHER APP HERE
-            // This assumes your other app expects JSON like: { "apiKey": "the-key-user-sent" }
-            const response = await axios.post(CALCULATOR_URL, { 
-                apiKey: msgText 
+        while (keepFetching) {
+            const response = await axios.get(baseUrl, {
+                headers: {
+                    'Authorization': `Key ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                params: {
+                    filters: `start_date:${startDate},end_date:${endDate}`,
+                    page_number: pageNumber,
+                    page_size: 100 
+                }
             });
 
-            // WE EXPECT YOUR OTHER APP TO RETURN: { "quote": "R50,000" }
-            const quoteAmount = response.data.quote; 
-            
-            await sendMessage(from, `Based on your sales history, your funding quote is:\n\n*${quoteAmount}*\n\nWould you like to accept this offer? (Yes/No)`);
-            userState[from].step = 5;
+            if (response.status === 200 && response.data.sales && response.data.sales.length > 0) {
+                const sales = response.data.sales;
+                
+                sales.forEach(sale => {
+                    // Sum up the selling_price (Gross Sales)
+                    if (sale.selling_price) {
+                        totalSales += parseFloat(sale.selling_price);
+                    }
+                });
 
-        } catch (error) {
-            console.error("Calculator Error:", error.message);
-            await sendMessage(from, "We are having trouble reaching the calculator right now (it might be waking up). Please try pasting the key again in 10 seconds.");
-            // We do NOT advance the step, so they can try again immediately
-        }
-      }
+                console.log(`Page ${pageNumber}: Found ${sales.length} sales. Running Total: ${totalSales}`);
+                pageNumber++;
+                
+                // Safety break to prevent infinite loops if API is weird
+                if (pageNumber > 50) keepFetching = false; 
 
-      // Step 5: Handoff to Agent
-      else if (step === 5) {
-        if (msgText.toLowerCase().includes("yes")) {
-            // Pick a random agent
-            const randomAgent = AGENTS[Math.floor(Math.random() * AGENTS.length)];
-            
-            await sendMessage(from, `Fantastic choice! 🎉\n\nI am assigning you to ${randomAgent.name} to finalize the details.`);
-            await sendMessage(from, `Click here to chat with them immediately: ${randomAgent.link}`);
-            
-            // Reset for next time
-            userState[from].step = 0; 
-        } else {
-            await sendMessage(from, "No problem. Type 'Hi' anytime to start over.");
-            userState[from].step = 0;
+            } else {
+                keepFetching = false; // No more sales or empty page
+            }
         }
-      }
+
+        // Calculate the Offer (80% of Gross Sales)
+        const offerAmount = totalSales * 0.80;
+        return Math.floor(offerAmount); // Return rounded number
+
+    } catch (error) {
+        console.error("Calculator Error:", error.message);
+        return null; // Signal that it failed
     }
-    res.sendStatus(200);
-  } else {
-    res.sendStatus(404);
-  }
+}
+
+// ==========================================
+// 2. WHATSAPP CONNECTION
+// ==========================================
+app.get("/webhook", (req, res) => {
+    if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === VERIFY_TOKEN) {
+        res.status(200).send(req.query["hub.challenge"]);
+    } else {
+        res.sendStatus(403);
+    }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
+app.post("/webhook", async (req, res) => {
+    const body = req.body;
+
+    if (body.object) {
+        if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
+            const messageData = body.entry[0].changes[0].value.messages[0];
+            const from = messageData.from;
+            const text = messageData.text ? messageData.text.body : "";
+
+            // Initialize user state if new
+            if (!userState[from]) {
+                userState[from] = { step: 0 };
+            }
+
+            const step = userState[from].step;
+
+            // --- CONVERSATION FLOW ---
+            
+            // RESET command
+            if (text.toLowerCase() === "reset") {
+                userState[from].step = 0;
+                await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
+                res.sendStatus(200);
+                return;
+            }
+
+            // STEP 0: Welcome
+            if (step === 0) {
+                await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nWe help Takealot sellers calculate their funding potential.\n\nDo you want to see how much funding you qualify for? (Yes/No)");
+                userState[from].step = 1;
+            } 
+            
+            // STEP 1: Confirm Interest
+            else if (step === 1) {
+                if (text.toLowerCase().includes("yes")) {
+                    await sendWhatsAppMessage(from, "Great! To give you an accurate quote, we need to analyze your sales history.\n\nPlease paste your **Takealot Seller API Key** below.\n\n_(Don't worry, we only use this once to calculate the number!)_");
+                    userState[from].step = 2;
+                } else {
+                    await sendWhatsAppMessage(from, "No problem! Type 'Hi' anytime you are ready to grow.");
+                    userState[from].step = 0;
+                }
+            }
+
+            // STEP 2: Handle API Key & Calculate
+            else if (step === 2) {
+                const apiKey = text.trim(); // The user's input is the key
+
+                // Validate Key length (Basic check)
+                if (apiKey.length < 10) {
+                    await sendWhatsAppMessage(from, "That API key looks a bit short. Please check it and paste it again.");
+                    return; 
+                }
+
+                await sendWhatsAppMessage(from, "🔍 Crunching the numbers... This takes about 10 seconds.");
+
+                // CALL THE INTERNAL CALCULATOR
+                const quote = await calculateQuote(apiKey);
+
+                if (quote !== null) {
+                    // Format as Currency (ZAR)
+                    const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
+                    
+                    await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for up to:\n\n💰 **${formattedQuote}**\n\nWould you like to speak to an agent to secure this funding? (Yes/No)`);
+                    userState[from].step = 3;
+                } else {
+                    await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data. Please make sure the API Key is correct and try again.\n\n(Type 'reset' to start over)");
+                }
+            }
+
+            // STEP 3: Closing
+            else if (step === 3) {
+                 await sendWhatsAppMessage(from, "Perfect. An agent will contact you shortly on this number. 🚀\n\nHave a great day!");
+                 userState[from].step = 0; // Reset
+            }
+        }
+        res.sendStatus(200);
+    } else {
+        res.sendStatus(404);
+    }
+});
+
+// Helper function to send messages
+async function sendWhatsAppMessage(to, bodyText) {
+    try {
+        await axios.post(
+            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to: to,
+                text: { body: bodyText }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+    } catch (error) {
+        console.error("Error sending message:", error.response ? error.response.data : error.message);
+    }
+}
+
+app.listen(PORT, () => {
+    console.log(`Bot is running on port ${PORT}`);
+});
