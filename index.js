@@ -13,25 +13,19 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const userState = {};
 
 // ==========================================
-// 1. CALCULATOR (Now looks back 180 Days)
+// 1. CALCULATOR (12 MONTHS / 365 DAYS)
 // ==========================================
 async function calculateQuote(apiKey) {
-    // --- DEMO BACKDOOR FOR VIDEO ---
-    if (apiKey === "DEMO_MODE") {
-        return 450000; // Fake quote of R450k
-    }
-    // -------------------------------
-
     try {
         const baseUrl = 'https://seller-api.takealot.com/v2/sales';
         let totalSales = 0;
         let keepFetching = true;
         let pageNumber = 1;
 
-        // REAL MODE: Look back 180 days (6 Months)
+        // UPDATED: Look back 365 days (12 Months)
         const today = new Date();
         const pastDate = new Date();
-        pastDate.setDate(today.getDate() - 180); 
+        pastDate.setDate(today.getDate() - 365); 
 
         const startDate = pastDate.toISOString().split('T')[0];
         const endDate = today.toISOString().split('T')[0];
@@ -39,10 +33,7 @@ async function calculateQuote(apiKey) {
         console.log(`[Calc] Starting fetch: ${startDate} to ${endDate}`);
 
         while (keepFetching) {
-            // Manual URL construction
             const finalUrl = `${baseUrl}?filters=start_date:${startDate},end_date:${endDate}&page_number=${pageNumber}&page_size=100`;
-
-            console.log(`[Calc] Requesting Page ${pageNumber}...`);
 
             const response = await axios.get(finalUrl, {
                 headers: {
@@ -53,28 +44,37 @@ async function calculateQuote(apiKey) {
 
             if (response.status === 200 && response.data.sales && response.data.sales.length > 0) {
                 const sales = response.data.sales;
+                
                 sales.forEach(sale => {
-                    // Check both 'selling_price' and 'quantity' just in case
                     if (sale.selling_price) {
                         totalSales += parseFloat(sale.selling_price);
                     }
                 });
-                console.log(`[Calc] Page ${pageNumber} Success. Rows: ${sales.length} | Running Total: ${totalSales}`);
+
+                console.log(`[Calc] Page ${pageNumber} Processed. Rows: ${sales.length} | Current Total: ${totalSales}`);
                 pageNumber++;
                 
-                // Limit to 20 pages (2000 sales) to prevent timeout during demo
-                if (pageNumber > 20) keepFetching = false; 
+                // UPDATED SAFETY LIMIT:
+                // Allow up to 150 pages (15,000 sales) to accommodate a full year of data
+                if (pageNumber > 150) keepFetching = false; 
+
             } else {
                 keepFetching = false;
             }
         }
 
-        console.log(`[Calc] Finished. Total Sales: ${totalSales}`);
-        // Quote is 80% of sales
+        console.log(`[Calc] Final Total Sales: ${totalSales}`);
+        
+        // Quote Logic: 80% of Gross Sales
         return Math.floor(totalSales * 0.80);
 
     } catch (error) {
-        console.error("[Calc Error]", error.message);
+        if (error.response) {
+            console.error("[Calc Error] API Status:", error.response.status);
+            console.error("[Calc Error] Data:", error.response.data);
+        } else {
+            console.error("[Calc Error] Network:", error.message);
+        }
         return null; 
     }
 }
@@ -91,10 +91,11 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-    // 1. Respond to Facebook IMMEDIATELY
+    // Prevent Timeout: Reply to Facebook immediately
     res.sendStatus(200);
 
     const body = req.body;
+
     if (body.object && body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
         const messageData = body.entry[0].changes[0].value.messages[0];
         const from = messageData.from;
@@ -103,7 +104,7 @@ app.post("/webhook", async (req, res) => {
         if (!userState[from]) userState[from] = { step: 0 };
         const step = userState[from].step;
 
-        // RESET
+        // RESET COMMAND
         if (text.toLowerCase() === "reset") {
             userState[from].step = 0;
             await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
@@ -131,23 +132,23 @@ app.post("/webhook", async (req, res) => {
         else if (step === 2) {
             const apiKey = text.trim();
 
-            await sendWhatsAppMessage(from, "🔍 Crunching the numbers... (Analyzing 6 Months History)");
+            if (apiKey.length < 10) {
+                await sendWhatsAppMessage(from, "That key looks invalid. Please paste the full key.");
+                return;
+            }
 
-            // Run calculation
+            // Updated message to warn user it might take a moment
+            await sendWhatsAppMessage(from, "🔍 Crunching the numbers... (Analyzing last 12 months)\n\nThis might take about 30 seconds.");
+
             const quote = await calculateQuote(apiKey);
 
             if (quote !== null) {
                 const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
                 
-                // If it's R0.00, we add a specific helpful message
-                if (quote === 0) {
-                     await sendWhatsAppMessage(from, `We analyzed your data successfully, but the total came to **${formattedQuote}**.\n\nThis usually means there were no completed sales found in the last 6 months.\n\nType 'reset' to try a different API key.`);
-                } else {
-                     await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you? (Yes/No)`);
-                     userState[from].step = 3;
-                }
+                await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you? (Yes/No)`);
+                userState[from].step = 3;
             } else {
-                await sendWhatsAppMessage(from, "⚠️ Access Denied.\n\nTakealot rejected the key. Please check:\n1. Is the key copied correctly?\n2. Is the key still active?");
+                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nPlease check:\n1. Is the API Key correct?\n2. Does this account have sales in the last 12 months?");
             }
         }
 
@@ -163,8 +164,17 @@ async function sendWhatsAppMessage(to, bodyText) {
     try {
         await axios.post(
             `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-            { messaging_product: "whatsapp", to: to, text: { body: bodyText } },
-            { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
+            {
+                messaging_product: "whatsapp",
+                to: to,
+                text: { body: bodyText }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json"
+                }
+            }
         );
     } catch (error) {
         console.error("Msg Error:", error.response ? error.response.data : error.message);
