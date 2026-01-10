@@ -11,13 +11,14 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 // ============================================================
-// 1. CONFIGURATION: EDIT THIS LIST OF CONSULTANTS
+// 1. CONFIGURATION: EDIT THIS LIST MANUALLY
 // ============================================================
-// Format: "27821234567" (No spaces, no '+', use country code '27')
+// IMPORTANT: Type these numbers out. Do not copy-paste from WhatsApp.
+// Format: "27821234567" (Country code 27, no + sign, no spaces)
 const consultants = [
-    { name: "RockIT Consultant Nadine", number: "‪27820786946‬" },
-    { name: "RockIT Consultant Junika", number: "‪27675473171‬" },
-    { name: "RockIT Consultant Nadia", number: "‪27725425093‬" }
+    { name: "RockIT Consultant Nadine", number: "27820786946" },
+    { name: "RockIT Consultant Junika", number: "27675473171" }
+    { name: "RockIT Consultant Nadia", number: "27725425093" }
 ];
 
 const userState = {};
@@ -73,7 +74,7 @@ async function calculateQuote(apiKey) {
         }
 
         console.log(`[Calc] Final Total Sales: ${totalSales}`);
-        return Math.floor(totalSales * 0.80); // 80% Quote
+        return Math.floor(totalSales * 0.80); 
 
     } catch (error) {
         console.error("[Calc Error]", error.message);
@@ -99,7 +100,7 @@ app.post("/webhook", async (req, res) => {
 
     if (body.object && body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
         const messageData = body.entry[0].changes[0].value.messages[0];
-        const from = messageData.from; // The User's Phone Number
+        const from = messageData.from;
         const text = messageData.text ? messageData.text.body : "";
 
         if (!userState[from]) userState[from] = { step: 0, quote: 0 };
@@ -143,9 +144,7 @@ app.post("/webhook", async (req, res) => {
             const quote = await calculateQuote(apiKey);
 
             if (quote !== null) {
-                // SAVE THE QUOTE TO MEMORY
                 userState[from].quote = quote;
-
                 const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
                 
                 await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you to secure this funding? (Yes/No)`);
@@ -158,21 +157,17 @@ app.post("/webhook", async (req, res) => {
         // STEP 3: ASSIGN TO AGENT
         else if (step === 3) {
              if (text.toLowerCase().includes("yes")) {
-                 // 1. Pick a Random Consultant
                  const randomAgent = consultants[Math.floor(Math.random() * consultants.length)];
-
-                 // 2. Format the Quote for display
                  const finalQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(userState[from].quote);
 
-                 // 3. Notify the User
+                 // Notify User
                  await sendWhatsAppMessage(from, `Perfect! We have assigned **${randomAgent.name}** to your case.\n\nThey have been notified and will message you shortly! 🚀`);
 
-                 // 4. Notify the Agent (The Bot sends a message to the Agent)
+                 // Notify Agent
                  const agentMessage = `🔔 *NEW LEAD ALERT*\n\n**Client Number:** +${from}\n**Qualified Amount:** ${finalQuote}\n**Status:** Customer accepted quote.\n\nPlease contact them immediately.`;
                  
                  await sendWhatsAppMessage(randomAgent.number, agentMessage);
 
-                 // Reset User
                  userState[from].step = 0;
              } else {
                  await sendWhatsAppMessage(from, "No problem. Type 'Hi' if you change your mind.");
