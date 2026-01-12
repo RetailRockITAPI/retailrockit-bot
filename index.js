@@ -15,23 +15,22 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 // ============================================================
 const consultants = [
     { name: "RockIT Consultant Nadine", number: "27820786946" },
-    { name: "RockIT Consultant Junika", number: "27675473171" }, // <--- Added missing comma here
+    { name: "RockIT Consultant Junika", number: "27675473171" },
     { name: "RockIT Consultant Nadia", number: "27725425093" }
 ];
 
 const userState = {};
 
 // ==========================================
-// 2. CALCULATOR (12 MONTHS / 365 DAYS)
+// 2. CALCULATOR (FIXED URL ENCODING)
 // ==========================================
 async function calculateQuote(apiKey) {
     try {
-        const baseUrl = 'https://seller-api.takealot.com/v2/sales';
         let totalSales = 0;
         let keepFetching = true;
         let pageNumber = 1;
 
-        // Look back 365 days (12 Months)
+        // Date Calculation (Last 365 Days)
         const today = new Date();
         const pastDate = new Date();
         pastDate.setDate(today.getDate() - 365); 
@@ -39,12 +38,15 @@ async function calculateQuote(apiKey) {
         const startDate = pastDate.toISOString().split('T')[0];
         const endDate = today.toISOString().split('T')[0];
         
-        console.log(`[Calc] Starting fetch: ${startDate} to ${endDate}`);
+        console.log(`[Calc] Fetching: ${startDate} to ${endDate}`);
 
         while (keepFetching) {
-            const finalUrl = `${baseUrl}?filters=start_date:${startDate},end_date:${endDate}&page_number=${pageNumber}&page_size=100`;
+            // FIX FOR ERROR 400:
+            // We construct the URL manually to prevent 'axios' from scrambling the colons (:)
+            const filterString = `start_date:${startDate},end_date:${endDate}`;
+            const url = `https://seller-api.takealot.com/v2/sales?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
 
-            const response = await axios.get(finalUrl, {
+            const response = await axios.get(url, {
                 headers: {
                     'Authorization': `Key ${apiKey}`,
                     'Content-Type': 'application/json'
@@ -60,10 +62,9 @@ async function calculateQuote(apiKey) {
                     }
                 });
 
-                console.log(`[Calc] Page ${pageNumber} Processed. Rows: ${sales.length} | Current Total: ${totalSales}`);
+                console.log(`[Calc] Page ${pageNumber} OK. Rows: ${sales.length}`);
                 pageNumber++;
                 
-                // Safety limit: 150 pages
                 if (pageNumber > 150) keepFetching = false; 
 
             } else {
@@ -71,11 +72,17 @@ async function calculateQuote(apiKey) {
             }
         }
 
-        console.log(`[Calc] Final Total Sales: ${totalSales}`);
+        console.log(`[Calc] Total: ${totalSales}`);
         return Math.floor(totalSales * 0.80); 
 
     } catch (error) {
-        console.error("[Calc Error]", error.message);
+        // Detailed Error Logging
+        if (error.response) {
+            console.error(`[Calc Error] Status: ${error.response.status}`);
+            console.error(`[Calc Error] Reason: ${JSON.stringify(error.response.data)}`);
+        } else {
+            console.error("[Calc Error] Network:", error.message);
+        }
         return null; 
     }
 }
@@ -104,20 +111,16 @@ app.post("/webhook", async (req, res) => {
         if (!userState[from]) userState[from] = { step: 0, quote: 0 };
         const step = userState[from].step;
 
-        // RESET COMMAND
         if (text.toLowerCase() === "reset") {
             userState[from] = { step: 0, quote: 0 };
             await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
             return;
         }
 
-        // STEP 0: Welcome
         if (step === 0) {
             await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want to see how much funding you qualify for? (Yes/No)");
             userState[from].step = 1;
         } 
-        
-        // STEP 1: Interest
         else if (step === 1) {
             if (text.toLowerCase().includes("yes")) {
                 await sendWhatsAppMessage(from, "Great! Please paste your **Takealot Seller API Key** below.");
@@ -127,8 +130,6 @@ app.post("/webhook", async (req, res) => {
                 userState[from].step = 0;
             }
         }
-
-        // STEP 2: Calculation
         else if (step === 2) {
             const apiKey = text.trim();
 
@@ -148,22 +149,17 @@ app.post("/webhook", async (req, res) => {
                 await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you to secure this funding? (Yes/No)`);
                 userState[from].step = 3;
             } else {
-                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nPlease check:\n1. Is the API Key correct?\n2. Does this account have sales in the last 12 months?");
+                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nTakealot rejected the key (Error 401). Please try generating a **New API Key**.");
             }
         }
-
-        // STEP 3: ASSIGN TO AGENT
         else if (step === 3) {
              if (text.toLowerCase().includes("yes")) {
                  const randomAgent = consultants[Math.floor(Math.random() * consultants.length)];
                  const finalQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(userState[from].quote);
 
-                 // Notify User
                  await sendWhatsAppMessage(from, `Perfect! We have assigned **${randomAgent.name}** to your case.\n\nThey have been notified and will message you shortly! 🚀`);
-
-                 // Notify Agent
-                 const agentMessage = `🔔 *NEW LEAD ALERT*\n\n**Client Number:** +${from}\n**Qualified Amount:** ${finalQuote}\n**Status:** Customer accepted quote.\n\nPlease contact them immediately.`;
                  
+                 const agentMessage = `🔔 *NEW LEAD ALERT*\n\n**Client Number:** +${from}\n**Qualified Amount:** ${finalQuote}\n**Status:** Customer accepted quote.\n\nPlease contact them immediately.`;
                  await sendWhatsAppMessage(randomAgent.number, agentMessage);
 
                  userState[from].step = 0;
@@ -179,17 +175,8 @@ async function sendWhatsAppMessage(to, bodyText) {
     try {
         await axios.post(
             `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to: to,
-                text: { body: bodyText }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "application/json"
-                }
-            }
+            { messaging_product: "whatsapp", to: to, text: { body: bodyText } },
+            { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
         );
     } catch (error) {
         console.error("Msg Error:", error.response ? error.response.data : error.message);
