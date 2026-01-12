@@ -22,15 +22,22 @@ const consultants = [
 const userState = {};
 
 // ==========================================
-// 2. CALCULATOR (FIXED URL ENCODING)
+// 2. CALCULATOR
 // ==========================================
-async function calculateQuote(apiKey) {
+async function calculateQuote(rawApiKey) {
     try {
+        // AGGRESSIVE CLEANING: Remove spaces, newlines, and hidden characters
+        const apiKey = rawApiKey.replace(/[\s\n\r]/g, "").trim();
+
+        console.log(`[Debug] Original Key Length: ${rawApiKey.length}`);
+        console.log(`[Debug] Cleaned Key Length: ${apiKey.length}`);
+
+        const baseUrl = 'https://seller-api.takealot.com/v2/sales';
         let totalSales = 0;
         let keepFetching = true;
         let pageNumber = 1;
 
-        // Date Calculation (Last 365 Days)
+        // Look back 365 days
         const today = new Date();
         const pastDate = new Date();
         pastDate.setDate(today.getDate() - 365); 
@@ -41,14 +48,13 @@ async function calculateQuote(apiKey) {
         console.log(`[Calc] Fetching: ${startDate} to ${endDate}`);
 
         while (keepFetching) {
-            // FIX FOR ERROR 400:
-            // We construct the URL manually to prevent 'axios' from scrambling the colons (:)
+            // Manual URL construction to avoid scrambling
             const filterString = `start_date:${startDate},end_date:${endDate}`;
-            const url = `https://seller-api.takealot.com/v2/sales?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
+            const url = `${baseUrl}?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
 
             const response = await axios.get(url, {
                 headers: {
-                    'Authorization': `Key ${apiKey}`,
+                    'Authorization': `Key ${apiKey}`, // Using the cleaned key
                     'Content-Type': 'application/json'
                 }
             });
@@ -76,10 +82,9 @@ async function calculateQuote(apiKey) {
         return Math.floor(totalSales * 0.80); 
 
     } catch (error) {
-        // Detailed Error Logging
         if (error.response) {
             console.error(`[Calc Error] Status: ${error.response.status}`);
-            console.error(`[Calc Error] Reason: ${JSON.stringify(error.response.data)}`);
+            console.error(`[Calc Error] Data: ${JSON.stringify(error.response.data)}`);
         } else {
             console.error("[Calc Error] Network:", error.message);
         }
@@ -111,16 +116,20 @@ app.post("/webhook", async (req, res) => {
         if (!userState[from]) userState[from] = { step: 0, quote: 0 };
         const step = userState[from].step;
 
+        // RESET
         if (text.toLowerCase() === "reset") {
             userState[from] = { step: 0, quote: 0 };
             await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
             return;
         }
 
+        // STEP 0
         if (step === 0) {
             await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want to see how much funding you qualify for? (Yes/No)");
             userState[from].step = 1;
         } 
+        
+        // STEP 1
         else if (step === 1) {
             if (text.toLowerCase().includes("yes")) {
                 await sendWhatsAppMessage(from, "Great! Please paste your **Takealot Seller API Key** below.");
@@ -130,17 +139,13 @@ app.post("/webhook", async (req, res) => {
                 userState[from].step = 0;
             }
         }
+
+        // STEP 2
         else if (step === 2) {
-            const apiKey = text.trim();
-
-            if (apiKey.length < 10) {
-                await sendWhatsAppMessage(from, "That key looks invalid. Please paste the full key.");
-                return;
-            }
-
+            // We pass the raw text to the calculator, which will clean it
             await sendWhatsAppMessage(from, "🔍 Crunching the numbers... (Analyzing last 12 months)\n\nThis might take about 30 seconds.");
 
-            const quote = await calculateQuote(apiKey);
+            const quote = await calculateQuote(text);
 
             if (quote !== null) {
                 userState[from].quote = quote;
@@ -149,9 +154,11 @@ app.post("/webhook", async (req, res) => {
                 await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you to secure this funding? (Yes/No)`);
                 userState[from].step = 3;
             } else {
-                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nTakealot rejected the key (Error 401). Please try generating a **New API Key**.");
+                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nThe API Key was rejected (Error 401). Please try generating a **New API Key** on Takealot.");
             }
         }
+
+        // STEP 3
         else if (step === 3) {
              if (text.toLowerCase().includes("yes")) {
                  const randomAgent = consultants[Math.floor(Math.random() * consultants.length)];
@@ -160,6 +167,7 @@ app.post("/webhook", async (req, res) => {
                  await sendWhatsAppMessage(from, `Perfect! We have assigned **${randomAgent.name}** to your case.\n\nThey have been notified and will message you shortly! 🚀`);
                  
                  const agentMessage = `🔔 *NEW LEAD ALERT*\n\n**Client Number:** +${from}\n**Qualified Amount:** ${finalQuote}\n**Status:** Customer accepted quote.\n\nPlease contact them immediately.`;
+                 
                  await sendWhatsAppMessage(randomAgent.number, agentMessage);
 
                  userState[from].step = 0;
