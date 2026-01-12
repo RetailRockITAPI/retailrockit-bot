@@ -22,72 +22,87 @@ const consultants = [
 const userState = {};
 
 // ==========================================
-// 2. CALCULATOR (NUCLEAR CLEANING MODE)
+// 2. CALCULATOR (SPLIT 6-MONTH REQUESTS)
 // ==========================================
-async function calculateQuote(dirtyInput) {
+async function calculateQuote(rawInput) {
     try {
-        // NUCLEAR CLEANER: 
-        // 1. Remove the word "Key" (case insensitive)
-        // 2. Remove ANYTHING that is not a Letter (a-z), Number (0-9), or Dash (-)
-        const apiKey = dirtyInput.replace(/Key/gi, "").replace(/[^a-zA-Z0-9-]/g, "");
+        // SAFE CLEANER: Only remove "Key" at start, trim spaces
+        let apiKey = rawInput.replace(/^Key\s*/i, "").trim();
 
-        console.log(`[Calc] Input received. Cleaning...`);
-        console.log(`[Calc] Cleaned Key: ${apiKey.substring(0, 5)}... (Length: ${apiKey.length})`);
+        // Helper function to fetch a specific chunk of time
+        async function fetchChunk(startDateObj, endDateObj) {
+            let chunkTotal = 0;
+            let keepFetching = true;
+            let pageNumber = 1;
+            
+            const startStr = startDateObj.toISOString().split('T')[0];
+            const endStr = endDateObj.toISOString().split('T')[0];
+            
+            console.log(`[Calc] Fetching Chunk: ${startStr} to ${endStr}`);
 
-        const baseUrl = 'https://seller-api.takealot.com/v2/sales';
-        let totalSales = 0;
-        let keepFetching = true;
-        let pageNumber = 1;
+            while (keepFetching) {
+                // Construct URL for this specific chunk and page
+                const filterString = `start_date:${startStr},end_date:${endStr}`;
+                const url = `https://seller-api.takealot.com/v2/sales?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
 
-        // Look back 365 days
-        const today = new Date();
-        const pastDate = new Date();
-        pastDate.setDate(today.getDate() - 365); 
+                try {
+                    const response = await axios.get(url, {
+                        headers: {
+                            'Authorization': `Key ${apiKey}`, 
+                            'Content-Type': 'application/json',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                        }
+                    });
 
-        const startDate = pastDate.toISOString().split('T')[0];
-        const endDate = today.toISOString().split('T')[0];
-        
-        while (keepFetching) {
-            const filterString = `start_date:${startDate},end_date:${endDate}`;
-            const url = `${baseUrl}?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
-
-            const response = await axios.get(url, {
-                headers: {
-                    'Authorization': `Key ${apiKey}`, 
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                }
-            });
-
-            if (response.status === 200 && response.data.sales && response.data.sales.length > 0) {
-                const sales = response.data.sales;
-                
-                sales.forEach(sale => {
-                    if (sale.selling_price) {
-                        totalSales += parseFloat(sale.selling_price);
+                    if (response.status === 200 && response.data.sales && response.data.sales.length > 0) {
+                        const sales = response.data.sales;
+                        sales.forEach(sale => {
+                            if (sale.selling_price) {
+                                chunkTotal += parseFloat(sale.selling_price);
+                            }
+                        });
+                        pageNumber++;
+                        // Safety limit per chunk
+                        if (pageNumber > 100) keepFetching = false; 
+                    } else {
+                        keepFetching = false;
                     }
-                });
-
-                console.log(`[Calc] Page ${pageNumber} OK. Rows: ${sales.length}`);
-                pageNumber++;
-                
-                if (pageNumber > 150) keepFetching = false; 
-
-            } else {
-                keepFetching = false;
+                } catch (err) {
+                    console.error(`[Calc Chunk Error] ${err.message}`);
+                    keepFetching = false; // Stop this chunk on error
+                }
             }
+            return chunkTotal;
         }
 
-        console.log(`[Calc] Total Sales Found: ${totalSales}`);
-        return Math.floor(totalSales * 0.80); 
+        // --- MAIN LOGIC: SPLIT INTO 2 CHUNKS ---
+        const today = new Date();
+        
+        // Chunk 1: Last 6 Months (0 to 180 days ago)
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setDate(today.getDate() - 180);
+
+        // Chunk 2: Previous 6 Months (180 to 365 days ago)
+        const oneYearAgo = new Date();
+        oneYearAgo.setDate(today.getDate() - 365);
+
+        console.log("--- STARTING CALCULATION ---");
+        
+        // Run fetch for Chunk 1
+        const totalPart1 = await fetchChunk(sixMonthsAgo, today);
+        console.log(`[Calc] Part 1 Total: R${totalPart1}`);
+
+        // Run fetch for Chunk 2
+        const totalPart2 = await fetchChunk(oneYearAgo, sixMonthsAgo);
+        console.log(`[Calc] Part 2 Total: R${totalPart2}`);
+
+        const grandTotal = totalPart1 + totalPart2;
+        console.log(`[Calc] GRAND TOTAL: R${grandTotal}`);
+
+        return Math.floor(grandTotal * 0.80); 
 
     } catch (error) {
-        if (error.response) {
-            console.error(`[Calc Error] Status: ${error.response.status}`);
-            console.error(`[Calc Error] Data: ${JSON.stringify(error.response.data)}`);
-        } else {
-            console.error("[Calc Error] Network:", error.message);
-        }
+        console.error("[Calc Critical Error]", error.message);
         return null; 
     }
 }
