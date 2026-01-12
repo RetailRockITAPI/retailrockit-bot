@@ -22,15 +22,16 @@ const consultants = [
 const userState = {};
 
 // ==========================================
-// 2. CALCULATOR
+// 2. CALCULATOR (SMART CLEANING + USER AGENT)
 // ==========================================
 async function calculateQuote(rawApiKey) {
     try {
-        // AGGRESSIVE CLEANING: Remove spaces, newlines, and hidden characters
-        const apiKey = rawApiKey.replace(/[\s\n\r]/g, "").trim();
+        // SMART CLEANING:
+        // 1. Remove the word "Key" if the user pasted it
+        // 2. Remove invisible spaces/newlines
+        let apiKey = rawApiKey.replace(/Key/gi, "").replace(/[\s\n\r]/g, "").trim();
 
-        console.log(`[Debug] Original Key Length: ${rawApiKey.length}`);
-        console.log(`[Debug] Cleaned Key Length: ${apiKey.length}`);
+        console.log(`[Debug] Cleaned Key: ${apiKey.substring(0, 5)}...`); 
 
         const baseUrl = 'https://seller-api.takealot.com/v2/sales';
         let totalSales = 0;
@@ -48,14 +49,14 @@ async function calculateQuote(rawApiKey) {
         console.log(`[Calc] Fetching: ${startDate} to ${endDate}`);
 
         while (keepFetching) {
-            // Manual URL construction to avoid scrambling
             const filterString = `start_date:${startDate},end_date:${endDate}`;
             const url = `${baseUrl}?filters=${filterString}&page_number=${pageNumber}&page_size=100`;
 
             const response = await axios.get(url, {
                 headers: {
-                    'Authorization': `Key ${apiKey}`, // Using the cleaned key
-                    'Content-Type': 'application/json'
+                    'Authorization': `Key ${apiKey}`, 
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' // Trick to look like a browser
                 }
             });
 
@@ -142,7 +143,6 @@ app.post("/webhook", async (req, res) => {
 
         // STEP 2
         else if (step === 2) {
-            // We pass the raw text to the calculator, which will clean it
             await sendWhatsAppMessage(from, "🔍 Crunching the numbers... (Analyzing last 12 months)\n\nThis might take about 30 seconds.");
 
             const quote = await calculateQuote(text);
