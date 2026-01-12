@@ -11,13 +11,11 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 // ============================================================
-// 1. CONFIGURATION: EDIT THIS LIST MANUALLY
+// 1. CONFIGURATION: CONSULTANT LIST
 // ============================================================
-// IMPORTANT: Type these numbers out. Do not copy-paste from WhatsApp.
-// Format: "27821234567" (Country code 27, no + sign, no spaces)
 const consultants = [
     { name: "RockIT Consultant Nadine", number: "27820786946" },
-    { name: "RockIT Consultant Junika", number: "27675473171" }
+    { name: "RockIT Consultant Junika", number: "27675473171" }, // <--- Added missing comma here
     { name: "RockIT Consultant Nadia", number: "27725425093" }
 ];
 
