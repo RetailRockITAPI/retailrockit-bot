@@ -131,8 +131,11 @@ app.post("/webhook", async (req, res) => {
         if (!userState[from]) userState[from] = { step: 0, quote: 0 };
         const step = userState[from].step;
 
+        // Clean input for simple Yes/No checks (remove spaces, lowercase)
+        const cleanText = text.toLowerCase().trim();
+
         // RESET
-        if (text.toLowerCase() === "reset") {
+        if (cleanText === "reset") {
             userState[from] = { step: 0, quote: 0 };
             await sendWhatsAppMessage(from, "Conversation reset. Say 'Hi' to start over!");
             return;
@@ -140,13 +143,14 @@ app.post("/webhook", async (req, res) => {
 
         // STEP 0
         if (step === 0) {
-            await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want to see how much funding you qualify for? (Yes/No)");
+            await sendWhatsAppMessage(from, "Welcome to RetailRockIT! 🚀\n\nDo you want to see how much FREEDOM your qualifying stock can unlock? (Yes/No)");
             userState[from].step = 1;
         } 
         
         // STEP 1
         else if (step === 1) {
-            if (text.toLowerCase().includes("yes")) {
+            // Updated to accept "yes" OR "y"
+            if (cleanText.includes("yes") || cleanText === "y") {
                 await sendWhatsAppMessage(from, "Great! Please paste your **Takealot Seller API Key** below.");
                 userState[from].step = 2;
             } else {
@@ -165,16 +169,17 @@ app.post("/webhook", async (req, res) => {
                 userState[from].quote = quote;
                 const formattedQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(quote);
                 
-                await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you to secure this funding? (Yes/No)`);
+                await sendWhatsAppMessage(from, `🎉 **Good News!**\n\nBased on your sales history, you qualify for:\n\n💰 **${formattedQuote}**\n\nWould you like an agent to contact you before you miss out? (Yes/No)`);
                 userState[from].step = 3;
             } else {
-                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nThe API Key was rejected (Error 401). Please try generating a **New API Key** on Takealot.");
+                await sendWhatsAppMessage(from, "⚠️ We couldn't access your sales data.\n\nThe API Key was rejected. Please try generating a **New API Key** on Takealot.");
             }
         }
 
         // STEP 3
         else if (step === 3) {
-             if (text.toLowerCase().includes("yes")) {
+             // Updated to accept "yes" OR "y"
+             if (cleanText.includes("yes") || cleanText === "y") {
                  const randomAgent = consultants[Math.floor(Math.random() * consultants.length)];
                  const finalQuote = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(userState[from].quote);
 
